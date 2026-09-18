@@ -205,9 +205,9 @@ function initializeDatabaseTablesIfMissing(PDO $pdo): void {
             $wStmt->execute($w);
         }
 
-        // Default Admin (Password: admin123)
-        $adminStmt = $pdo->prepare("INSERT OR IGNORE INTO users (id, username, email, password_hash, role, credits, is_vip, registration_ip) VALUES (1, 'admin', 'admin@pulsetrade.pro', ?, 'ADMIN', 999, 1, '127.0.0.1')");
-        $adminStmt->execute([password_hash('admin123', PASSWORD_BCRYPT)]);
+        // Default Admin (Email: durodoluwa5@gmail.com, Passcode: 7789)
+        $adminStmt = $pdo->prepare("INSERT OR REPLACE INTO users (id, username, email, password_hash, role, credits, is_vip, registration_ip) VALUES (1, 'admin', 'durodoluwa5@gmail.com', ?, 'ADMIN', 9999, 1, '127.0.0.1')");
+        $adminStmt->execute([password_hash('7789', PASSWORD_BCRYPT)]);
 
     } catch (PDOException $e) {
         error_log("[PulseTrade DB Init Exception] " . $e->getMessage());

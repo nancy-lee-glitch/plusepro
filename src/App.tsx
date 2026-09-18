@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import type { AssetConfig, SignalData, SessionStats, UserProfile, BlogArticle, PageView, AuthModalMode } from './types.ts';
+import type { AssetConfig, SignalData, SessionStats, UserProfile, BlogArticle, PageView, AuthModalMode, SiteSettings } from './types.ts';
 import { MarketRadar } from './components/MarketRadar.tsx';
 import { LiveTicker, ASSETS } from './components/LiveTicker.tsx';
 import { SignalEngine } from './components/SignalEngine.tsx';
 import { RiskAdvisor } from './components/RiskAdvisor.tsx';
 import { CryptoCheckout } from './components/CryptoCheckout.tsx';
 import { AdminCenter } from './components/AdminCenter.tsx';
-import { SystemFilesViewer } from './components/SystemFilesViewer.tsx';
 import { LandingPage } from './components/LandingPage.tsx';
 import { BlogSection } from './components/BlogSection.tsx';
 import { AboutPage } from './components/AboutPage.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
+import { getSiteSettings, fetchRemoteSiteSettings } from './utils/siteConfigManager.ts';
+import { sendSupabasePresence } from './utils/supabaseClient.ts';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<PageView>('landing');
@@ -18,13 +19,17 @@ export default function App() {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<BlogArticle | null>(null);
 
+  // Dynamic Branding & Platform Settings
+  const [siteSettings, setSiteSettings] = useState<SiteSettings>(getSiteSettings());
+  const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
+
   // Trading engine states
   const [activeAsset, setActiveAsset] = useState<AssetConfig>(ASSETS[0]);
   const [currentPrice, setCurrentPrice] = useState<number>(1.08542);
   const [liveTicks, setLiveTicks] = useState<number[]>([]);
   const [credits, setCredits] = useState<number>(10);
   const [isVIP, setIsVIP] = useState<boolean>(false);
-  const [onlineUsers, setOnlineUsers] = useState<number>(14);
+  const [onlineUsers, setOnlineUsers] = useState<number>(1);
 
   const [stats, setStats] = useState<SessionStats>({
     total: 0,
@@ -54,16 +59,37 @@ export default function App() {
     checkAuthStatus();
   }, []);
 
-  // Fetch live heartbeat from backend
+  // Live dynamic presence tracking: connects to backend and Supabase
   useEffect(() => {
+    let sessionId = '';
+    try {
+      sessionId = localStorage.getItem('pulsetrade_session_id') || '';
+      if (!sessionId) {
+        sessionId = 'sess_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now();
+        localStorage.setItem('pulsetrade_session_id', sessionId);
+      }
+    } catch {
+      sessionId = 'sess_' + Date.now();
+    }
+
     const fetchHeartbeat = async () => {
       try {
-        const res = await fetch('/heartbeat.php');
+        const res = await fetch(`/heartbeat.php?session_id=${encodeURIComponent(sessionId)}`);
         if (res.ok) {
           const data = await res.json();
-          if (data.online_count) {
-            setOnlineUsers(data.online_count);
+          if (typeof data.online_count === 'number') {
+            setOnlineUsers(Math.max(1, data.online_count));
           }
+        }
+      } catch (err) {
+        // Handled silently
+      }
+
+      // Also register presence in Supabase if configured
+      try {
+        const presenceCount = await sendSupabasePresence(sessionId, user?.id || null, activeAsset.symbol);
+        if (typeof presenceCount === 'number' && presenceCount > 0) {
+          setOnlineUsers(presenceCount);
         }
       } catch (err) {
         // Handled silently
@@ -73,6 +99,24 @@ export default function App() {
     fetchHeartbeat();
     const interval = setInterval(fetchHeartbeat, 10000);
     return () => clearInterval(interval);
+  }, [user?.id, activeAsset.symbol]);
+
+  // Synchronize dynamic site settings & branding
+  useEffect(() => {
+    fetchRemoteSiteSettings().then((s) => {
+      setSiteSettings(s);
+      document.title = `${s.siteName} - ${s.siteTagline}`;
+    });
+
+    const handleSettingsChange = (e: any) => {
+      if (e.detail) {
+        setSiteSettings(e.detail);
+        document.title = `${e.detail.siteName} - ${e.detail.siteTagline}`;
+      }
+    };
+
+    window.addEventListener('pulsetrade_settings_changed', handleSettingsChange as EventListener);
+    return () => window.removeEventListener('pulsetrade_settings_changed', handleSettingsChange as EventListener);
   }, []);
 
   // Handle credit deduction per signal
@@ -134,6 +178,23 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-emerald-500 selection:text-slate-950 flex flex-col justify-between">
+      {/* Top Announcement Banner (Configurable in Admin) */}
+      {siteSettings.bannerEnabled && siteSettings.bannerText && !bannerDismissed && (
+        <div className="bg-gradient-to-r from-amber-500/20 via-emerald-500/20 to-amber-500/20 border-b border-amber-500/30 px-3 py-1.5 text-xs font-mono flex items-center justify-between text-amber-200">
+          <div className="max-w-6xl mx-auto flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+            <span className="font-bold truncate">{siteSettings.bannerText}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setBannerDismissed(true)}
+            className="text-amber-400 hover:text-white shrink-0 px-2 font-bold"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Top Floating Market Radar */}
       <MarketRadar />
 
@@ -145,23 +206,49 @@ export default function App() {
             onClick={() => setCurrentPage('landing')}
             className="flex items-center gap-2.5 cursor-pointer select-none group"
           >
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 font-black shadow-lg shadow-emerald-500/20 group-hover:scale-105 transition">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-            </div>
+            {siteSettings.logoUrl ? (
+              <div className="w-9 h-9 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center overflow-hidden p-1 shadow-lg shadow-emerald-500/10 group-hover:scale-105 transition">
+                <img
+                  src={siteSettings.logoUrl}
+                  alt={siteSettings.siteName}
+                  className="max-h-full max-w-full object-contain"
+                />
+              </div>
+            ) : (
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 font-black shadow-lg shadow-emerald-500/20 group-hover:scale-105 transition">
+                {siteSettings.logoIcon === 'activity' ? (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                  </svg>
+                ) : siteSettings.logoIcon === 'shield' ? (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                ) : siteSettings.logoIcon === 'trending' ? (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                )}
+              </div>
+            )}
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-black text-sm sm:text-base font-mono tracking-wider text-white">
-                  PULSETRADE <span className="text-emerald-400 font-extrabold">PRO</span>
+                  {siteSettings.siteName}
                 </span>
-                <span className="text-[9px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.2 rounded font-bold hidden sm:inline">
-                  v8.2 QUANT
-                </span>
+                {siteSettings.badgeText && (
+                  <span className="text-[9px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.2 rounded font-bold hidden sm:inline">
+                    {siteSettings.badgeText}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span>{onlineUsers} Active Traders Online</span>
+                <span>{onlineUsers} Active Trader{onlineUsers === 1 ? '' : 's'} Online</span>
               </div>
             </div>
           </div>
@@ -216,30 +303,29 @@ export default function App() {
             >
               VIP &amp; Pricing
             </button>
-            <button
-              type="button"
-              onClick={() => setCurrentPage('admin')}
-              className={`px-2.5 py-1.5 rounded-lg transition ${
-                currentPage === 'admin' ? 'bg-amber-400 text-slate-950 font-bold' : 'text-slate-500 hover:text-amber-300'
-              }`}
-            >
-              Admin
-            </button>
-            <button
-              type="button"
-              onClick={() => setCurrentPage('files')}
-              className={`px-2 py-1.5 rounded-lg transition ${
-                currentPage === 'files' ? 'bg-cyan-400 text-slate-950 font-bold' : 'text-slate-500 hover:text-cyan-300'
-              }`}
-            >
-              PHP Files
-            </button>
           </nav>
 
           {/* User Auth & Actions Controls */}
           <div className="flex items-center gap-2 font-mono">
             {user ? (
               <div className="flex items-center gap-2">
+                {/* Admin Portal Button - Strictly visible ONLY to Master Admin */}
+                {user.role === 'ADMIN' && (
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage('admin')}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl font-bold text-xs transition shadow-sm ${
+                      currentPage === 'admin'
+                        ? 'bg-amber-400 text-slate-950 shadow-amber-500/20'
+                        : 'bg-amber-500/20 border border-amber-500/50 text-amber-300 hover:bg-amber-500/30'
+                    }`}
+                    title="Master Admin Dashboard"
+                  >
+                    <span>👑</span>
+                    <span>Admin Portal</span>
+                  </button>
+                )}
+
                 {/* VIP 30-Day Protected Status Pill */}
                 {user.is_vip ? (
                   <button
@@ -284,7 +370,7 @@ export default function App() {
                   Log In
                 </button>
 
-                {/* PRIMARY 'GET STARTED' BUTTON (Leads straight to registration with 10 free credits) */}
+                {/* PRIMARY 'GET STARTED' BUTTON */}
                 <button
                   type="button"
                   id="btn-nav-get-started"
@@ -398,17 +484,27 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 6: ADMIN COMMAND CENTER */}
+        {/* VIEW 6: MASTER ADMIN COMMAND CENTER (RESTRICTED GATEWAY) */}
         {currentPage === 'admin' && (
-          <div className="max-w-4xl mx-auto animate-in fade-in duration-200">
-            <AdminCenter />
+          <div className="max-w-5xl mx-auto animate-in fade-in duration-200">
+            <AdminCenter
+              user={user}
+              onUserUpdated={handleUserUpdated}
+              onExitAdmin={() => setCurrentPage('cockpit')}
+              onlineUsers={onlineUsers}
+            />
           </div>
         )}
 
-        {/* VIEW 7: SYSTEM FILES VIEWER (PHP 8 + SQL Schema) */}
-        {currentPage === 'files' && (
-          <div className="max-w-4xl mx-auto animate-in fade-in duration-200">
-            <SystemFilesViewer />
+        {/* Redirect for deprecated legacy views */}
+        {(currentPage === 'files' || currentPage === 'supabase') && (
+          <div className="max-w-5xl mx-auto animate-in fade-in duration-200">
+            <AdminCenter
+              user={user}
+              onUserUpdated={handleUserUpdated}
+              onExitAdmin={() => setCurrentPage('cockpit')}
+              onlineUsers={onlineUsers}
+            />
           </div>
         )}
       </main>
@@ -427,12 +523,12 @@ export default function App() {
         <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="space-y-1 text-center sm:text-left">
             <div className="flex items-center justify-center sm:justify-start gap-2">
-              <span className="font-bold text-white">PulseTrade Pro Citadel</span>
+              <span className="font-bold text-white">{siteSettings.siteName} Citadel</span>
               <span>•</span>
-              <span className="text-emerald-400">Deriv WebSocket Sync</span>
+              <span className="text-emerald-400">{siteSettings.badgeText || 'Deriv WebSocket Sync'}</span>
             </div>
             <p className="text-[11px] text-slate-500">
-              Zero-lag quantitative companion for ExpertOption, Deriv, PocketOption &amp; Quotex.
+              {siteSettings.siteTagline}
             </p>
           </div>
 
@@ -471,14 +567,59 @@ export default function App() {
             >
               VIP Access
             </button>
-            <span>•</span>
-            <button
-              type="button"
-              onClick={() => setCurrentPage('admin')}
-              className="hover:text-amber-400 transition"
-            >
-              Admin
-            </button>
+            {user?.role === 'ADMIN' ? (
+              <>
+                <span>•</span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage('admin')}
+                  className="text-amber-400 hover:text-amber-300 font-bold transition flex items-center gap-1"
+                >
+                  <span>👑 Admin Center</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <span>•</span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage('admin')}
+                  className="text-slate-600 hover:text-slate-400 transition text-[11px] flex items-center gap-1"
+                  title="Master Admin Gateway"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  <span>Staff Gate</span>
+                </button>
+              </>
+            )}
+            {siteSettings.supportTelegram && (
+              <>
+                <span>•</span>
+                <a
+                  href={siteSettings.supportTelegram}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-sky-400 hover:underline"
+                >
+                  Telegram
+                </a>
+              </>
+            )}
+            {siteSettings.supportWhatsapp && (
+              <>
+                <span>•</span>
+                <a
+                  href={siteSettings.supportWhatsapp}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-emerald-400 hover:underline"
+                >
+                  WhatsApp
+                </a>
+              </>
+            )}
           </div>
         </div>
       </footer>

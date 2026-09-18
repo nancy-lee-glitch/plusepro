@@ -96,7 +96,7 @@ $vipExpires = $user['vip_expires_at'] ?? null;
                 <div class="flex items-center gap-2 text-[10px] font-mono text-slate-400">
                     <span class="flex items-center gap-1 text-emerald-400">
                         <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                        <span id="onlineCountBadge">14 Live Traders</span>
+                        <span id="onlineCountBadge">1 Live Trader</span>
                     </span>
                     <span>&bull;</span>
                     <span id="connectionStatus" class="text-emerald-400">Feed Active</span>
@@ -842,7 +842,8 @@ $vipExpires = $user['vip_expires_at'] ?? null;
                 const res = await fetch('heartbeat.php');
                 const data = await res.json();
                 if (data.online_count !== undefined) {
-                    document.getElementById('onlineCountBadge').innerText = `${data.online_count} Live Traders`;
+                    const count = Number(data.online_count) || 1;
+                    document.getElementById('onlineCountBadge').innerText = `${count} Live Trader${count === 1 ? '' : 's'}`;
                 }
             } catch (err) {
                 // Keep smooth UX

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import type { AssetConfig, SignalData, SessionStats, TechnicalAudit } from '../types.ts';
 import { playCallAudioChime, playPutAudioChime } from '../utils/audio.ts';
-import { analyzeMarketConfluence } from '../utils/quantEngine.ts';
+import { analyzeMarketConfluence, calculateMT5Parameters } from '../utils/quantEngine.ts';
+import { logSignalToSupabase, logOutcomeToSupabase } from '../utils/supabaseClient.ts';
 
 interface SignalEngineProps {
   activeAsset: AssetConfig;
@@ -38,6 +39,13 @@ export function SignalEngine({
   const [isLocked, setIsLocked] = useState<boolean>(false);
   const [freshnessSec, setFreshnessSec] = useState<number>(6.0);
   const [isExpired, setIsExpired] = useState<boolean>(false);
+
+  // Signal Execution Mode: Binary / Deriv Option vs MetaTrader 5 (MT5 Forex)
+  const [executionMode, setExecutionMode] = useState<'binary' | 'mt5'>('binary');
+  const [mt5Balance, setMt5Balance] = useState<number>(10000);
+  const [mt5RiskPct, setMt5RiskPct] = useState<number>(1.0);
+  const [copiedMt5Text, setCopiedMt5Text] = useState<boolean>(false);
+  const [copiedMt5Json, setCopiedMt5Json] = useState<boolean>(false);
   
   // Re-check animation state
   const [isRechecking, setIsRechecking] = useState<boolean>(false);
@@ -112,6 +120,16 @@ export function SignalEngine({
         else if (liveAudit.tickAcceleration < -0.1) finalDirection = 'PUT';
       }
 
+      const mt5Parameters = calculateMT5Parameters(
+        activeAsset.name,
+        finalDirection,
+        currentPrice,
+        activeAsset.pipSize,
+        activeAsset.decimals,
+        mt5Balance,
+        mt5RiskPct
+      );
+
       const generatedSignal: SignalData = {
         asset: activeAsset.name,
         timeframe: selectedTf,
@@ -127,9 +145,12 @@ export function SignalEngine({
             : currentPrice - activeAsset.pipSize * (selectedTf === '30s' ? 4 : 8),
         technicalAudit: liveAudit,
         expirySeconds: tfConfig.seconds,
+        mt5: mt5Parameters,
       };
 
       setSignal(generatedSignal);
+      // Sync signal to Supabase database if configured
+      logSignalToSupabase(generatedSignal);
       setIsLocked(true);
       setIsRechecking(false);
       setIsExpired(false);
@@ -215,6 +236,7 @@ export function SignalEngine({
       setActiveTrade((prev) => (prev ? { ...prev, completed: true } : null));
       if (signal) {
         onLogOutcome(finalOutcome, signal);
+        logOutcomeToSupabase(finalOutcome, signal);
       }
     }
   }, [currentPrice, activeTrade?.secondsRemaining, activeAsset.pipSize]);
@@ -222,9 +244,57 @@ export function SignalEngine({
   const handleOutcome = (outcome: 'WIN' | 'LOSS') => {
     if (!signal) return;
     onLogOutcome(outcome, signal);
+    logOutcomeToSupabase(outcome, signal);
     setIsLocked(false);
     setActiveTrade(null);
     if (tradeTimerRef.current) clearInterval(tradeTimerRef.current);
+  };
+
+  // Recalculate MT5 position size dynamically when trader changes balance or risk %
+  useEffect(() => {
+    if (signal) {
+      const updatedMt5 = calculateMT5Parameters(
+        activeAsset.name,
+        signal.direction,
+        signal.entryPrice || currentPrice,
+        activeAsset.pipSize,
+        activeAsset.decimals,
+        mt5Balance,
+        mt5RiskPct
+      );
+      setSignal((prev) => (prev ? { ...prev, mt5: updatedMt5 } : null));
+    }
+  }, [mt5Balance, mt5RiskPct]);
+
+  const handleCopyMt5Setup = () => {
+    if (!signal?.mt5) return;
+    navigator.clipboard.writeText(signal.mt5.formattedText);
+    setCopiedMt5Text(true);
+    setTimeout(() => setCopiedMt5Text(false), 3000);
+  };
+
+  const handleCopyMt5Json = () => {
+    if (!signal?.mt5) return;
+    const payload = JSON.stringify(
+      {
+        action: signal.mt5.orderType,
+        symbol: signal.mt5.symbol,
+        entry: signal.mt5.entryPrice,
+        stop_loss: signal.mt5.stopLossPrice,
+        take_profit_1: signal.mt5.takeProfit1Price,
+        take_profit_2: signal.mt5.takeProfit2Price,
+        lot_size: signal.mt5.recommendedLot,
+        account_risk_usd: signal.mt5.accountRiskAmount,
+        timeframe: signal.timeframe.toUpperCase(),
+        confidence_pct: signal.confidence,
+        timestamp: Math.floor(signal.generatedAt / 1000),
+      },
+      null,
+      2
+    );
+    navigator.clipboard.writeText(payload);
+    setCopiedMt5Json(true);
+    setTimeout(() => setCopiedMt5Json(false), 3000);
   };
 
   useEffect(() => {
@@ -495,6 +565,33 @@ export function SignalEngine({
         ) : (
           /* Active Signal Telemetry */
           <div className="space-y-4">
+            {/* Mode Switcher: Binary Option vs MT5 Forex */}
+            <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+              <button
+                type="button"
+                onClick={() => setExecutionMode('binary')}
+                className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-mono font-bold transition flex items-center justify-center gap-1.5 ${
+                  executionMode === 'binary'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <span>⚡ Deriv / Binary ({signal.timeframe.toUpperCase()})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setExecutionMode('mt5')}
+                className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-mono font-bold transition flex items-center justify-center gap-1.5 ${
+                  executionMode === 'mt5'
+                    ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <span>📊 MetaTrader 5 (MT5 Forex)</span>
+              </button>
+            </div>
+
+            {/* Signal Header with Badges */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span
@@ -505,11 +602,13 @@ export function SignalEngine({
                       : 'text-white bg-rose-500 shadow-rose-500/20'
                   }`}
                 >
-                  {signal.direction === 'CALL' ? 'CALL (BUY)' : 'PUT (SELL)'}
+                  {executionMode === 'mt5'
+                    ? (signal.direction === 'CALL' ? 'BUY (LONG)' : 'SELL (SHORT)')
+                    : (signal.direction === 'CALL' ? 'CALL (BUY)' : 'PUT (SELL)')}
                 </span>
                 <div className="flex flex-col">
                   <span className="text-xs font-mono font-bold text-slate-200">
-                    {signal.asset} &bull; {signal.timeframe.toUpperCase()}
+                    {signal.asset} &bull; {executionMode === 'mt5' ? 'MT5 EXECUTION' : signal.timeframe.toUpperCase()}
                   </span>
                   <span className="text-[10px] font-mono text-emerald-400">
                     {signal.technicalAudit?.setupName}
@@ -518,43 +617,186 @@ export function SignalEngine({
               </div>
 
               {/* 6-Second Freshness Window Radial Timer */}
-              <div className="flex items-center gap-2">
-                <div className="relative w-9 h-9 flex items-center justify-center">
-                  <svg className="w-9 h-9 -rotate-90" viewBox="0 0 36 36">
-                    <circle cx="18" cy="18" r="14" fill="none" stroke="#1e293b" strokeWidth="3" />
-                    <circle
-                      cx="18"
-                      cy="18"
-                      r="14"
-                      fill="none"
-                      stroke={isExpired ? '#f43f5e' : '#10b981'}
-                      strokeWidth="3"
-                      strokeDasharray="88"
-                      strokeDashoffset={progressOffset}
-                      className="transition-all duration-100"
-                    />
-                  </svg>
-                  <span className="absolute text-[10px] font-mono font-bold text-white">
-                    {Math.ceil(freshnessSec)}s
-                  </span>
+              {executionMode === 'binary' && (
+                <div className="flex items-center gap-2">
+                  <div className="relative w-9 h-9 flex items-center justify-center">
+                    <svg className="w-9 h-9 -rotate-90" viewBox="0 0 36 36">
+                      <circle cx="18" cy="18" r="14" fill="none" stroke="#1e293b" strokeWidth="3" />
+                      <circle
+                        cx="18"
+                        cy="18"
+                        r="14"
+                        fill="none"
+                        stroke={isExpired ? '#f43f5e' : '#10b981'}
+                        strokeWidth="3"
+                        strokeDasharray="88"
+                        strokeDashoffset={progressOffset}
+                        className="transition-all duration-100"
+                      />
+                    </svg>
+                    <span className="absolute text-[10px] font-mono font-bold text-white">
+                      {Math.ceil(freshnessSec)}s
+                    </span>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
-            {/* Freshness Banner */}
-            <div
-              id="freshness-banner"
-              className={`px-3 py-2 rounded-xl text-xs font-mono font-bold flex items-center justify-between transition-all ${
-                !isExpired
-                  ? 'bg-emerald-950/70 border border-emerald-500/40 text-emerald-300'
-                  : 'bg-rose-950/70 border border-rose-500/40 text-rose-300 animate-pulse'
-              }`}
-            >
-              <span>{isExpired ? '🔴 ENTRY EXPIRED — RE-SCAN TO PREVENT SPREAD SLIPPAGE' : '🟢 PRIME ENTRY WINDOW CONFIRMED'}</span>
-              <span className="text-[10px] opacity-90">
-                {isExpired ? 'Strike Void' : `Valid: ${freshnessSec.toFixed(1)}s`}
-              </span>
-            </div>
+            {/* Freshness Banner for Binary Mode */}
+            {executionMode === 'binary' && (
+              <div
+                id="freshness-banner"
+                className={`px-3 py-2 rounded-xl text-xs font-mono font-bold flex items-center justify-between transition-all ${
+                  !isExpired
+                    ? 'bg-emerald-950/70 border border-emerald-500/40 text-emerald-300'
+                    : 'bg-rose-950/70 border border-rose-500/40 text-rose-300 animate-pulse'
+                }`}
+              >
+                <span>{isExpired ? '🔴 ENTRY EXPIRED — RE-SCAN TO PREVENT SPREAD SLIPPAGE' : '🟢 PRIME ENTRY WINDOW CONFIRMED'}</span>
+                <span className="text-[10px] opacity-90">
+                  {isExpired ? 'Strike Void' : `Valid: ${freshnessSec.toFixed(1)}s`}
+                </span>
+              </div>
+            )}
+
+            {/* METATRADER 5 (MT5) FOREX EXECUTION DASHBOARD */}
+            {executionMode === 'mt5' && signal.mt5 && (
+              <div className="bg-slate-950 border border-blue-500/30 rounded-2xl p-4 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-850 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-400" />
+                    <span className="text-xs font-mono font-bold text-blue-300 uppercase">
+                      MetaTrader 5 Order Parameters
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                    Symbol: {signal.mt5.symbol}
+                  </span>
+                </div>
+
+                {/* SL / TP Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center font-mono">
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-2.5">
+                    <span className="text-[10px] text-slate-500 uppercase block">Entry Price</span>
+                    <span className="text-xs font-bold text-white block mt-0.5">{signal.mt5.entryPrice}</span>
+                  </div>
+                  <div className="bg-slate-900/80 border border-rose-500/30 rounded-xl p-2.5">
+                    <span className="text-[10px] text-rose-400 uppercase block">Stop Loss (SL)</span>
+                    <span className="text-xs font-bold text-rose-300 block mt-0.5">{signal.mt5.stopLossPrice}</span>
+                    <span className="text-[9px] text-rose-400/80">-{signal.mt5.stopLossPips} pips</span>
+                  </div>
+                  <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-2.5">
+                    <span className="text-[10px] text-emerald-400 uppercase block">Take Profit 1</span>
+                    <span className="text-xs font-bold text-emerald-300 block mt-0.5">{signal.mt5.takeProfit1Price}</span>
+                    <span className="text-[9px] text-emerald-400/80">+{signal.mt5.takeProfit1Pips} pips (1:1.5)</span>
+                  </div>
+                  <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-2.5">
+                    <span className="text-[10px] text-teal-400 uppercase block">Take Profit 2</span>
+                    <span className="text-xs font-bold text-teal-300 block mt-0.5">{signal.mt5.takeProfit2Price}</span>
+                    <span className="text-[9px] text-teal-400/80">+{signal.mt5.takeProfit2Pips} pips (1:3.0)</span>
+                  </div>
+                </div>
+
+                {/* MT5 Account Balance & Lot Size Calculator */}
+                <div className="bg-slate-900/60 border border-slate-850 rounded-xl p-3 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <span className="text-slate-300 font-bold">MT5 Position Size Calculator:</span>
+                    <span className="text-emerald-400 font-bold">
+                      Recommended: <span className="text-sm font-black text-white">{signal.mt5.recommendedLot} Lots</span>
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <span className="text-[10px] font-mono text-slate-400 block mb-1">Account Balance ($ USD):</span>
+                      <div className="flex items-center gap-1">
+                        {[1000, 5000, 10000, 50000, 100000].map((bal) => (
+                          <button
+                            key={bal}
+                            type="button"
+                            onClick={() => setMt5Balance(bal)}
+                            className={`flex-1 py-1 px-1.5 rounded text-[10px] font-mono font-bold transition ${
+                              mt5Balance === bal
+                                ? 'bg-blue-500 text-white shadow-sm'
+                                : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            ${bal >= 1000 ? `${bal / 1000}k` : bal}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] font-mono text-slate-400 block mb-1">Risk Per Trade:</span>
+                      <div className="flex items-center gap-1">
+                        {[0.5, 1.0, 2.0].map((risk) => (
+                          <button
+                            key={risk}
+                            type="button"
+                            onClick={() => setMt5RiskPct(risk)}
+                            className={`flex-1 py-1 px-1.5 rounded text-[10px] font-mono font-bold transition ${
+                              mt5RiskPct === risk
+                                ? 'bg-blue-500 text-white shadow-sm'
+                                : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {risk}% (${((mt5Balance * risk) / 100).toFixed(0)})
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* MT5 Copy Buttons */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleCopyMt5Setup}
+                    className="py-2.5 px-3 bg-blue-600 hover:bg-blue-500 text-white font-mono font-bold text-xs rounded-xl shadow-lg shadow-blue-500/20 transition flex items-center justify-center gap-2 active:scale-95"
+                  >
+                    {copiedMt5Text ? (
+                      <>
+                        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span>✓ COPIED MT5 SETUP!</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        <span>COPY MT5 SETUP</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCopyMt5Json}
+                    className="py-2.5 px-3 bg-slate-800 hover:bg-slate-750 text-slate-200 font-mono font-bold text-xs rounded-xl border border-slate-700 transition flex items-center justify-center gap-2 active:scale-95"
+                  >
+                    {copiedMt5Json ? (
+                      <>
+                        <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span>✓ COPIED EA WEBHOOK JSON!</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                        </svg>
+                        <span>COPY EA WEBHOOK JSON</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Verified Confluence Factors Audit Trail */}
             {signal.technicalAudit && (
@@ -574,21 +816,23 @@ export function SignalEngine({
               </div>
             )}
 
-            {/* Strike & Target Price Info */}
-            <div className="grid grid-cols-3 gap-2 text-center font-mono">
-              <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-2.5">
-                <span className="text-[10px] text-slate-500 uppercase block">Entry Strike</span>
-                <span className="text-xs font-bold text-white block mt-0.5">{signal.entryPrice}</span>
+            {/* Strike & Target Price Info for Binary Mode */}
+            {executionMode === 'binary' && (
+              <div className="grid grid-cols-3 gap-2 text-center font-mono">
+                <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-2.5">
+                  <span className="text-[10px] text-slate-500 uppercase block">Entry Strike</span>
+                  <span className="text-xs font-bold text-white block mt-0.5">{signal.entryPrice}</span>
+                </div>
+                <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-2.5">
+                  <span className="text-[10px] text-slate-500 uppercase block">Confluence</span>
+                  <span className="text-base font-black text-emerald-400">{signal.confidence}%</span>
+                </div>
+                <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-2.5">
+                  <span className="text-[10px] text-slate-500 uppercase block">Target Strike</span>
+                  <span className="text-xs font-bold text-amber-400 block mt-0.5">{signal.targetPrice?.toFixed(activeAsset.decimals)}</span>
+                </div>
               </div>
-              <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-2.5">
-                <span className="text-[10px] text-slate-500 uppercase block">Confluence</span>
-                <span className="text-base font-black text-emerald-400">{signal.confidence}%</span>
-              </div>
-              <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-2.5">
-                <span className="text-[10px] text-slate-500 uppercase block">Target Strike</span>
-                <span className="text-xs font-bold text-amber-400 block mt-0.5">{signal.targetPrice?.toFixed(activeAsset.decimals)}</span>
-              </div>
-            </div>
+            )}
 
             {/* EXECUTE ON BROKER CTA */}
             {!activeTrade && !isExpired && (

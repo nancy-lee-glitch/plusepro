@@ -30,6 +30,22 @@ export interface TechnicalAudit {
   recommendedAction: 'CALL' | 'PUT' | 'WAIT';
 }
 
+export interface MT5TradeParameters {
+  symbol: string;
+  orderType: 'BUY' | 'SELL';
+  entryPrice: number;
+  stopLossPrice: number;
+  stopLossPips: number;
+  takeProfit1Price: number;
+  takeProfit1Pips: number;
+  takeProfit2Price: number;
+  takeProfit2Pips: number;
+  riskRewardRatio: string;
+  recommendedLot: number;
+  accountRiskAmount: number;
+  formattedText: string;
+}
+
 export interface SignalData {
   asset: string;
   timeframe: string;
@@ -42,6 +58,7 @@ export interface SignalData {
   entryPrice?: number;
   technicalAudit?: TechnicalAudit;
   expirySeconds?: number;
+  mt5?: MT5TradeParameters;
 }
 
 export interface SessionStats {
@@ -98,6 +115,45 @@ export interface BlogArticle {
   keyTakeaways: string[];
 }
 
-export type PageView = 'landing' | 'cockpit' | 'blog' | 'about' | 'pricing' | 'admin' | 'files';
+export interface SiteSettings {
+  siteName: string;
+  siteTagline: string;
+  logoUrl?: string;
+  logoIcon: 'zap' | 'activity' | 'shield' | 'flame' | 'trending';
+  badgeText: string;
+  bannerText: string;
+  bannerEnabled: boolean;
+  supportTelegram: string;
+  supportWhatsapp: string;
+  supportEmail: string;
+  vipPriceUsd: number;
+  starterPriceUsd: number;
+  themeAccent: 'emerald' | 'amber' | 'blue' | 'purple';
+}
+
+export interface NowPaymentsConfig {
+  apiKey: string;
+  ipnSecret: string;
+  isSandbox: boolean;
+  enabled: boolean;
+  payoutAddress?: string;
+}
+
+export interface NowPaymentsPayment {
+  paymentId: string;
+  payAddress: string;
+  payAmount: number;
+  payCurrency: string;
+  priceAmount: number;
+  priceCurrency: string;
+  orderId: string;
+  orderDescription: string;
+  paymentStatus: 'waiting' | 'confirming' | 'confirmed' | 'sending' | 'finished' | 'failed' | 'refunded' | 'expired';
+  createdAt: string;
+  updatedAt?: string;
+  actuallyPaid?: number;
+}
+
+export type PageView = 'landing' | 'cockpit' | 'blog' | 'about' | 'pricing' | 'admin' | 'files' | 'supabase';
 
 export type AuthModalMode = 'login' | 'register' | 'profile' | 'redeem-vip' | null;

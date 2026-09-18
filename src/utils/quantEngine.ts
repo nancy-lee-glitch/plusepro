@@ -10,6 +10,8 @@
  * - Timeframe-Specific Confluence Models (30s micro-scalp vs 1m trend)
  */
 
+import type { MT5TradeParameters } from '../types.ts';
+
 export interface TickData {
   price: number;
   time: number;
@@ -321,3 +323,66 @@ export function analyzeMarketConfluence(
     recommendedAction,
   };
 }
+
+/**
+ * Calculate MetaTrader 5 (MT5) Institutional Trade Parameters:
+ * - Precise Stop Loss (SL) based on volatility buffer
+ * - Take Profit 1 (TP1) @ 1:1.5 RR & Take Profit 2 (TP2) @ 1:3.0 RR
+ * - Position / Lot Size calculation based on account balance ($1,000 / $10,000 / $100,000 etc.) & risk %
+ * - One-click formatted string for MT5 execution and EA webhooks
+ */
+export function calculateMT5Parameters(
+  assetName: string,
+  direction: 'CALL' | 'PUT',
+  entryPrice: number,
+  pipSize: number,
+  decimals: number,
+  accountBalance: number = 10000,
+  riskPercent: number = 1.0
+): MT5TradeParameters {
+  const isBuy = direction === 'CALL';
+  const orderType: 'BUY' | 'SELL' = isBuy ? 'BUY' : 'SELL';
+
+  // Standard Stop Loss pips (e.g. 15 pips for Forex, 40 pips for Synthetics)
+  const slPips = assetName.includes('VOL') ? 40 : 15;
+  const tp1Pips = slPips * 1.5; // 1:1.5 RR
+  const tp2Pips = slPips * 3.0; // 1:3.0 RR
+
+  const slDelta = slPips * pipSize;
+  const tp1Delta = tp1Pips * pipSize;
+  const tp2Delta = tp2Pips * pipSize;
+
+  const stopLossPrice = parseFloat((isBuy ? entryPrice - slDelta : entryPrice + slDelta).toFixed(decimals));
+  const takeProfit1Price = parseFloat((isBuy ? entryPrice + tp1Delta : entryPrice - tp1Delta).toFixed(decimals));
+  const takeProfit2Price = parseFloat((isBuy ? entryPrice + tp2Delta : entryPrice - tp2Delta).toFixed(decimals));
+
+  // Lot Size calculation:
+  // Risk Amount ($) = Account Balance * (Risk% / 100)
+  // For standard Forex, 1 Lot = $10/pip. Lot Size = Risk Amount / (SL Pips * $10)
+  const riskAmount = (accountBalance * riskPercent) / 100;
+  const pipValuePerLot = assetName.includes('VOL') ? 1.0 : 10.0;
+  const calculatedLot = riskAmount / (slPips * pipValuePerLot);
+  const recommendedLot = Math.max(0.01, parseFloat(calculatedLot.toFixed(2)));
+
+  // Clean symbol name for MT5 (e.g. "EUR/USD" -> "EURUSD")
+  const mt5Symbol = assetName.replace(/[^A-Za-z0-9]/g, '');
+
+  const formattedText = `${orderType} ${mt5Symbol} @ ${entryPrice.toFixed(decimals)} | SL: ${stopLossPrice.toFixed(decimals)} (-${slPips} pips) | TP1: ${takeProfit1Price.toFixed(decimals)} (+${tp1Pips} pips) | TP2: ${takeProfit2Price.toFixed(decimals)} (+${tp2Pips} pips) | Lots: ${recommendedLot} ($${riskAmount.toFixed(0)} risk)`;
+
+  return {
+    symbol: mt5Symbol,
+    orderType,
+    entryPrice: parseFloat(entryPrice.toFixed(decimals)),
+    stopLossPrice,
+    stopLossPips: slPips,
+    takeProfit1Price,
+    takeProfit1Pips: tp1Pips,
+    takeProfit2Price,
+    takeProfit2Pips: tp2Pips,
+    riskRewardRatio: '1 : 2.0 (TP1: 1:1.5 / TP2: 1:3.0)',
+    recommendedLot,
+    accountRiskAmount: riskAmount,
+    formattedText,
+  };
+}
+
