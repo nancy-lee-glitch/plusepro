@@ -5,9 +5,54 @@
 export interface AssetConfig {
   symbol: string;
   name: string;
-  type: 'FOREX' | 'COMMODITY' | 'SYNTH';
+  type: 'FOREX' | 'COMMODITY' | 'SYNTH' | 'CRYPTO' | 'STOCK' | 'INDEX';
   decimals: number;
   pipSize: number;
+  basePrice?: number;
+  marketHours?: string;
+  category?: string;
+}
+
+export interface SafeCloseAnalysis {
+  volatilityLevel: 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME';
+  recommendedSeconds: number;
+  peakMomentumWindow: string;
+  safeProfitPips: number;
+  advisoryText: string;
+  earlyCloseRecommended: boolean;
+  reversalRisk: 'LOW' | 'MODERATE' | 'ELEVATED';
+}
+
+export interface SignalHistoryItem {
+  id: string;
+  asset: string;
+  timeframe: string;
+  direction: 'CALL' | 'PUT';
+  entryPrice: number;
+  targetPrice?: number;
+  generatedAt: number;
+  confidence: number;
+  outcome?: 'WIN' | 'LOSS' | 'IN_TRADE' | 'PENDING';
+  sparkline: number[];
+  pipDiff?: number;
+  safeCloseSuggestion?: string;
+}
+
+export interface VipScreenerAsset {
+  symbol: string;
+  name: string;
+  type: 'FOREX' | 'COMMODITY' | 'SYNTH' | 'CRYPTO' | 'STOCK' | 'INDEX';
+  price: number;
+  decimals: number;
+  change24h: number;
+  volatility: 'LOW' | 'NORMAL' | 'HIGH';
+  safetyRating: 'SAFE TO TRADE' | 'MODERATE RISK' | 'WAIT / VOLATILE';
+  recommendedAction: 'CALL' | 'PUT' | 'WAIT';
+  bestTimeframe: '30s' | '1m' | '5m' | '15m' | '1h';
+  confluenceScore: number;
+  safeCloseTiming: string;
+  reason: string;
+  sparkline: number[];
 }
 
 export interface TechnicalAudit {
