@@ -10,7 +10,7 @@
  * - Timeframe-Specific Confluence Models (30s micro-scalp vs 1m trend)
  */
 
-import type { MT5TradeParameters } from '../types.ts';
+import type { MT5TradeParameters, SafeCloseAnalysis } from '../types.ts';
 
 export interface TickData {
   price: number;
@@ -383,6 +383,93 @@ export function calculateMT5Parameters(
     recommendedLot,
     accountRiskAmount: riskAmount,
     formattedText,
+  };
+}
+
+/**
+ * Analyzes market velocity, tick variance, and momentum horizon to suggest
+ * the optimal safe close timing and profit target BEFORE and DURING a trade.
+ */
+export function calculateSafeCloseAnalysis(
+  ticks: number[],
+  selectedTimeframe: string,
+  pipSize: number,
+  direction?: 'CALL' | 'PUT'
+): SafeCloseAnalysis {
+  const safeTicks = ticks && ticks.length >= 5 ? ticks : [1.0850, 1.0851, 1.0852, 1.0853, 1.0854];
+  const n = safeTicks.length;
+  
+  // Calculate average tick step in pips
+  let totalDeltaPips = 0;
+  for (let i = 1; i < n; i++) {
+    totalDeltaPips += Math.abs(safeTicks[i] - safeTicks[i - 1]) / pipSize;
+  }
+  const avgTickDelta = totalDeltaPips / (n - 1);
+  const recentSlice = safeTicks.slice(-6);
+  const recentVelocity = Math.abs(recentSlice[recentSlice.length - 1] - recentSlice[0]) / (pipSize * Math.max(1, recentSlice.length));
+
+  // Determine Volatility Tier
+  let volatilityLevel: 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME' = 'NORMAL';
+  if (recentVelocity < 0.25 || avgTickDelta < 0.3) {
+    volatilityLevel = 'LOW';
+  } else if (recentVelocity > 1.4 || avgTickDelta > 1.8) {
+    volatilityLevel = 'EXTREME';
+  } else if (recentVelocity > 0.75 || avgTickDelta > 0.9) {
+    volatilityLevel = 'HIGH';
+  } else {
+    volatilityLevel = 'NORMAL';
+  }
+
+  // Base timeframe duration in seconds
+  const tfSeconds = 
+    selectedTimeframe === '30s' ? 30 :
+    selectedTimeframe === '1m' ? 60 :
+    selectedTimeframe === '2m' ? 120 :
+    selectedTimeframe === '3m' ? 180 :
+    selectedTimeframe === '5m' ? 300 :
+    selectedTimeframe === '15m' ? 900 : 60;
+
+  // Compute safe close horizon (recommended seconds)
+  let recommendedSeconds: number;
+  let peakMomentumWindow: string;
+  let safeProfitPips: number;
+  let advisoryText: string;
+  let reversalRisk: 'LOW' | 'MODERATE' | 'ELEVATED' = 'MODERATE';
+
+  if (volatilityLevel === 'LOW') {
+    // In low volatility, price moves in slow orderly waves; trade needs slightly longer to reach full pip expansion
+    const rec = Math.round(tfSeconds * 0.85);
+    recommendedSeconds = Math.max(20, rec);
+    peakMomentumWindow = `T+${Math.round(tfSeconds * 0.6)}s to T+${rec}s`;
+    safeProfitPips = parseFloat((pipSize <= 0.0001 ? 1.8 : 8.5).toFixed(1));
+    reversalRisk = 'LOW';
+    advisoryText = `Low Volatility detected. Price movement is steady with low whip risk. Optimal Safe Close target is ${recommendedSeconds}s; locking gains at +${safeProfitPips} pips avoids flatline stagnation.`;
+  } else if (volatilityLevel === 'HIGH' || volatilityLevel === 'EXTREME') {
+    // In high volatility, impulsive spikes occur early, followed by sharp mean reversion
+    const rec = Math.round(tfSeconds * 0.55);
+    recommendedSeconds = Math.max(15, rec);
+    peakMomentumWindow = `T+${Math.round(tfSeconds * 0.3)}s to T+${rec}s`;
+    safeProfitPips = parseFloat((pipSize <= 0.0001 ? 3.5 : 22.0).toFixed(1));
+    reversalRisk = 'ELEVATED';
+    advisoryText = `High Volatility warning! Fast impulse detected. Do not hold to full expiry—momentum peaks early (${peakMomentumWindow}). Safe early close recommended around ${recommendedSeconds}s or at +${safeProfitPips} pips.`;
+  } else {
+    // Normal Volatility - balanced wave
+    const rec = Math.round(tfSeconds * 0.70);
+    recommendedSeconds = Math.max(20, rec);
+    peakMomentumWindow = `T+${Math.round(tfSeconds * 0.45)}s to T+${rec}s`;
+    safeProfitPips = parseFloat((pipSize <= 0.0001 ? 2.4 : 14.0).toFixed(1));
+    reversalRisk = 'MODERATE';
+    advisoryText = `Normal Volatility index. Standard momentum continuation expected. Optimal Safe Close window is ${peakMomentumWindow} (${recommendedSeconds}s safe exit). Secure profit if +${safeProfitPips} pips is achieved.`;
+  }
+
+  return {
+    volatilityLevel,
+    recommendedSeconds,
+    peakMomentumWindow,
+    safeProfitPips,
+    advisoryText,
+    earlyCloseRecommended: volatilityLevel === 'HIGH' || volatilityLevel === 'EXTREME',
+    reversalRisk,
   };
 }
 
