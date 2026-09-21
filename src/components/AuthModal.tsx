@@ -40,36 +40,43 @@ export function AuthModal({
 
   const isSupabaseReady = Boolean(getSupabaseClient());
 
-    const handleLogin = async (e: React.FormEvent) => {
+     const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setErrorMessage(null);
     setSuccessMessage(null);
 
     try {
+      // Hard requirement: Supabase must be configured on Vercel
       if (!isSupabaseReady) {
         setErrorMessage(
-          'Supabase is not connected in this build. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel, then Redeploy.'
+          'Supabase is not connected in this build. In Vercel → Settings → Environment Variables, set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then Redeploy.'
         );
         return;
       }
 
-      const supaRes = await signInWithSupabase(identity, password);
+      const supaRes = await signUpWithSupabase(
+        email,
+        password,
+        username,
+        vipKey.trim()
+      );
 
       if (supaRes.success && supaRes.user) {
-        setSuccessMessage('Authentication successful!');
+        setSuccessMessage(supaRes.message || 'Registration successful!');
         onUserUpdated(supaRes.user);
-        setTimeout(() => setCurrentMode('profile'), 800);
+        setTimeout(() => setCurrentMode('profile'), 1200);
         return;
       }
 
+      // Always show the real Supabase error (no silent fallback to broken /api.php)
       setErrorMessage(
         supaRes.message
-          ? `Login failed: ${supaRes.message}`
-          : 'Invalid email/username or password.'
+          ? `Registration failed: ${supaRes.message}`
+          : 'Registration failed. Check email, password (min 6 chars), and Supabase Auth settings.'
       );
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Connection failed. Please retry.');
+      setErrorMessage(err?.message || 'Network error during registration. Please retry.');
     } finally {
       setLoading(false);
     }
