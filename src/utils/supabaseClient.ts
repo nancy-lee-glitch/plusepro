@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import type { UserProfile } from '../types.ts';
 
 // Cache client instance
 let supabaseInstance: SupabaseClient | null = null;
@@ -223,3 +224,232 @@ export async function logOutcomeToSupabase(outcome: 'WIN' | 'LOSS', signal: any,
     return false;
   }
 }
+
+/**
+ * Format a Supabase user into standard UserProfile
+ */
+function mapToUserProfile(userObj: any, dbUser?: any): UserProfile {
+  const metadata = userObj?.user_metadata || {};
+  const isVip = Boolean(dbUser?.is_vip || metadata.is_vip);
+  const vipExpiresAt = dbUser?.vip_expires_at || metadata.vip_expires_at || null;
+  
+  let vipDaysLeft = 0;
+  let vipHoursLeft = 0;
+  let vipSecondsLeft = 0;
+  if (isVip && vipExpiresAt) {
+    const diffMs = new Date(vipExpiresAt).getTime() - Date.now();
+    if (diffMs > 0) {
+      vipSecondsLeft = Math.floor(diffMs / 1000);
+      vipDaysLeft = Math.floor(vipSecondsLeft / 86400);
+      vipHoursLeft = Math.floor((vipSecondsLeft % 86400) / 3600);
+    }
+  }
+
+  const role = dbUser?.role || metadata.role || (userObj.email?.toLowerCase() === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER');
+
+  return {
+    id: dbUser?.id || (userObj.id ? parseInt(String(userObj.id).replace(/\D/g, '').slice(0, 8)) || 1 : 1),
+    username: dbUser?.username || metadata.username || userObj.email?.split('@')[0] || 'trader',
+    email: userObj.email || '',
+    role: role as 'USER' | 'ADMIN',
+    credits: typeof dbUser?.credits === 'number' ? dbUser.credits : (isVip || role === 'ADMIN' ? 9999 : 10),
+    is_vip: isVip,
+    vip_expires_at: vipExpiresAt,
+    vip_days_left: vipDaysLeft,
+    vip_hours_left: vipHoursLeft,
+    vip_seconds_left: vipSecondsLeft,
+  };
+}
+
+/**
+ * Supabase Auth: Register new user
+ */
+export async function signUpWithSupabase(
+  email: string,
+  password: string,
+  username: string,
+  vipKey?: string
+): Promise<{ success: boolean; user?: UserProfile; message: string }> {
+  const client = getSupabaseClient();
+  if (!client) {
+    return { success: false, message: 'Supabase client is not configured.' };
+  }
+
+  try {
+    const isValidVip = vipKey && ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'].includes(vipKey.trim().toUpperCase());
+    const vipExpiresAt = isValidVip ? new Date(Date.now() + 30 * 86400000).toISOString() : null;
+
+    const { data: authData, error: authError } = await client.auth.signUp({
+      email: email.trim().toLowerCase(),
+      password,
+      options: {
+        data: {
+          username: username.trim(),
+          is_vip: isValidVip,
+          vip_expires_at: vipExpiresAt,
+          role: email.trim().toLowerCase() === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER',
+        },
+      },
+    });
+
+    if (authError) {
+      return { success: false, message: authError.message };
+    }
+
+    if (!authData.user) {
+      return { success: false, message: 'Sign up failed: no user data returned.' };
+    }
+
+    // Attempt to upsert record into public.users table if it exists
+    let dbUser: any = null;
+    try {
+      const { data: insertedUser } = await client
+        .from('users')
+        .upsert(
+          {
+            auth_user_id: authData.user.id,
+            username: username.trim(),
+            email: email.trim().toLowerCase(),
+            role: email.trim().toLowerCase() === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER',
+            credits: isValidVip ? 9999 : 10,
+            is_vip: isValidVip,
+            vip_expires_at: vipExpiresAt,
+            registration_ip: 'client_connection',
+          },
+          { onConflict: 'email' }
+        )
+        .select()
+        .single();
+      dbUser = insertedUser;
+    } catch {
+      // Table might not exist yet, metadata in authData.user will suffice
+    }
+
+    const userProfile = mapToUserProfile(authData.user, dbUser);
+    return {
+      success: true,
+      user: userProfile,
+      message: isValidVip
+        ? 'Account successfully created with Supabase Auth! ★ 30-Day VIP Pass activated.'
+        : 'Account created with Supabase Auth with 10 free starter credits!',
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Supabase authentication failed.' };
+  }
+}
+
+/**
+ * Supabase Auth: Sign In existing user
+ */
+export async function signInWithSupabase(
+  identity: string,
+  password: string
+): Promise<{ success: boolean; user?: UserProfile; message: string }> {
+  const client = getSupabaseClient();
+  if (!client) {
+    return { success: false, message: 'Supabase client is not configured.' };
+  }
+
+  try {
+    let emailToUse = identity.trim().toLowerCase();
+    
+    // If identity is username (doesn't contain @), check public.users for email
+    if (!emailToUse.includes('@')) {
+      try {
+        const { data: match } = await client
+          .from('users')
+          .select('email')
+          .ilike('username', identity.trim())
+          .limit(1)
+          .single();
+        if (match?.email) {
+          emailToUse = match.email;
+        }
+      } catch {
+        // Fallback: assume identity might be email or username
+      }
+    }
+
+    const { data: authData, error: authError } = await client.auth.signInWithPassword({
+      email: emailToUse,
+      password,
+    });
+
+    if (authError) {
+      return { success: false, message: authError.message };
+    }
+
+    if (!authData.user) {
+      return { success: false, message: 'Authentication failed: no session.' };
+    }
+
+    // Fetch corresponding user record from database
+    let dbUser: any = null;
+    try {
+      const { data } = await client
+        .from('users')
+        .select('*')
+        .eq('email', authData.user.email)
+        .limit(1)
+        .single();
+      dbUser = data;
+    } catch {
+      // Ignore if table query fails
+    }
+
+    const profile = mapToUserProfile(authData.user, dbUser);
+    return {
+      success: true,
+      user: profile,
+      message: 'Supabase authentication successful!',
+    };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Supabase sign in failed.' };
+  }
+}
+
+/**
+ * Supabase Auth: Sign Out
+ */
+export async function signOutSupabase(): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client) return false;
+  try {
+    await client.auth.signOut();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Supabase Auth: Get current active session user
+ */
+export async function getCurrentSupabaseUser(): Promise<UserProfile | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+
+  try {
+    const { data: sessionData } = await client.auth.getSession();
+    const user = sessionData?.session?.user;
+    if (!user) return null;
+
+    let dbUser: any = null;
+    try {
+      const { data } = await client
+        .from('users')
+        .select('*')
+        .eq('email', user.email)
+        .limit(1)
+        .single();
+      dbUser = data;
+    } catch {
+      // Table fallback
+    }
+
+    return mapToUserProfile(user, dbUser);
+  } catch {
+    return null;
+  }
+}
+
