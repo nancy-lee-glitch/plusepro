@@ -10,6 +10,7 @@ import { LandingPage } from './components/LandingPage.tsx';
 import { BlogSection } from './components/BlogSection.tsx';
 import { AboutPage } from './components/AboutPage.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
+import { VipSafeRadarModal } from './components/VipSafeRadarModal.tsx';
 import { getSiteSettings, fetchRemoteSiteSettings } from './utils/siteConfigManager.ts';
 import { sendSupabasePresence } from './utils/supabaseClient.ts';
 
@@ -18,6 +19,7 @@ export default function App() {
   const [authModalMode, setAuthModalMode] = useState<AuthModalMode>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<BlogArticle | null>(null);
+  const [isVipRadarOpen, setIsVipRadarOpen] = useState<boolean>(false);
 
   // Dynamic Branding & Platform Settings
   const [siteSettings, setSiteSettings] = useState<SiteSettings>(getSiteSettings());
@@ -73,12 +75,17 @@ export default function App() {
     }
 
     const fetchHeartbeat = async () => {
+      let currentCount = 1;
       try {
-        const res = await fetch(`/heartbeat.php?session_id=${encodeURIComponent(sessionId)}`);
+        const res = await fetch(`/heartbeat.php?session_id=${encodeURIComponent(sessionId)}`, {
+          headers: {
+            'x-session-id': sessionId,
+          },
+        });
         if (res.ok) {
           const data = await res.json();
-          if (typeof data.online_count === 'number') {
-            setOnlineUsers(Math.max(1, data.online_count));
+          if (typeof data.online_count === 'number' && data.online_count > 0) {
+            currentCount = data.online_count;
           }
         }
       } catch (err) {
@@ -89,11 +96,13 @@ export default function App() {
       try {
         const presenceCount = await sendSupabasePresence(sessionId, user?.id || null, activeAsset.symbol);
         if (typeof presenceCount === 'number' && presenceCount > 0) {
-          setOnlineUsers(presenceCount);
+          currentCount = Math.max(currentCount, presenceCount);
         }
       } catch (err) {
         // Handled silently
       }
+
+      setOnlineUsers(Math.max(1, currentCount));
     };
 
     fetchHeartbeat();
@@ -436,6 +445,8 @@ export default function App() {
               onAssetChange={setActiveAsset}
               onPriceUpdate={setCurrentPrice}
               onTicksUpdate={setLiveTicks}
+              isVIP={isVIP || Boolean(user?.is_vip)}
+              onOpenVipRadar={() => setIsVipRadarOpen(true)}
             />
 
             {/* Multi-Timeframe Algorithmic Signal Engine & Lockout Loop */}
@@ -448,6 +459,9 @@ export default function App() {
               onLogOutcome={handleLogOutcome}
               stats={stats}
               ticks={liveTicks}
+              user={user}
+              onOpenAuth={(mode) => setAuthModalMode(mode)}
+              onOpenVipRadar={() => setIsVipRadarOpen(true)}
             />
 
             {/* Risk Advisor & 2% Stake Protection */}
@@ -516,6 +530,22 @@ export default function App() {
         onClose={() => setAuthModalMode(null)}
         onUserUpdated={handleUserUpdated}
         onNavigateToCheckout={() => setCurrentPage('pricing')}
+      />
+
+      {/* Real-time VIP Safe Market Screener / Radar Modal */}
+      <VipSafeRadarModal
+        isOpen={isVipRadarOpen}
+        onClose={() => setIsVipRadarOpen(false)}
+        isVIP={isVIP || Boolean(user?.is_vip)}
+        onSelectAsset={(asset) => {
+          setActiveAsset(asset);
+          setIsVipRadarOpen(false);
+          setCurrentPage('cockpit');
+        }}
+        onUpgradeVip={() => {
+          setIsVipRadarOpen(false);
+          setCurrentPage('pricing');
+        }}
       />
 
       {/* Global Footer */}
