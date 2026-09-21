@@ -1,5 +1,11 @@
 import React, { useState } from 'react';
 import type { UserProfile, AuthModalMode } from '../types.ts';
+import {
+  getSupabaseClient,
+  signUpWithSupabase,
+  signInWithSupabase,
+  signOutSupabase,
+} from '../utils/supabaseClient.ts';
 
 interface AuthModalProps {
   mode: AuthModalMode;
@@ -32,6 +38,8 @@ export function AuthModal({
 
   if (!mode) return null;
 
+  const isSupabaseReady = Boolean(getSupabaseClient());
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -39,29 +47,60 @@ export function AuthModal({
     setSuccessMessage(null);
 
     try {
-      const res = await fetch('/api.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'register',
-          username,
-          email,
-          password,
-          vip_key: vipKey.trim(),
-        }),
-      });
-      const data = await res.json();
-      if (data.success && data.user) {
-        setSuccessMessage(data.message || 'Registration successful!');
-        onUserUpdated(data.user);
+      let registeredUser: UserProfile | null = null;
+      let msg = 'Registration successful!';
+
+      // 1. Try Supabase Auth if client is configured
+      if (isSupabaseReady) {
+        const supaRes = await signUpWithSupabase(email, password, username, vipKey.trim());
+        if (supaRes.success && supaRes.user) {
+          registeredUser = supaRes.user;
+          msg = supaRes.message;
+        } else if (!supaRes.success && supaRes.message && !supaRes.message.includes('missing')) {
+          // If Supabase returned a direct auth error (e.g. user already exists or weak password)
+          setErrorMessage(`Supabase Auth: ${supaRes.message}`);
+          setLoading(false);
+          return;
+        }
+      }
+
+      // 2. Also sync to native backend database
+      try {
+        const res = await fetch('/api.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'register',
+            username,
+            email,
+            password,
+            vip_key: vipKey.trim(),
+          }),
+        });
+        const data = await res.json();
+        if (data.success && data.user) {
+          registeredUser = registeredUser || data.user;
+          msg = data.message || msg;
+        } else if (!registeredUser) {
+          setErrorMessage(data.message || 'Registration failed. Please check inputs.');
+          setLoading(false);
+          return;
+        }
+      } catch {
+        // If native API network glitch but Supabase succeeded, proceed
+      }
+
+      if (registeredUser) {
+        setSuccessMessage(msg);
+        onUserUpdated(registeredUser);
         setTimeout(() => {
           setCurrentMode('profile');
         }, 1200);
       } else {
-        setErrorMessage(data.message || 'Registration failed. Please check your inputs.');
+        setErrorMessage('Registration could not be completed. Please check your network.');
       }
     } catch (err: any) {
-      setErrorMessage('Network error during registration. Please retry.');
+      setErrorMessage(err?.message || 'Network error during registration. Please retry.');
     } finally {
       setLoading(false);
     }
@@ -74,27 +113,46 @@ export function AuthModal({
     setSuccessMessage(null);
 
     try {
-      const res = await fetch('/api.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'login',
-          identity,
-          password,
-        }),
-      });
-      const data = await res.json();
-      if (data.success && data.user) {
+      let authenticatedUser: UserProfile | null = null;
+
+      // 1. Try Supabase Auth if client is configured
+      if (isSupabaseReady) {
+        const supaRes = await signInWithSupabase(identity, password);
+        if (supaRes.success && supaRes.user) {
+          authenticatedUser = supaRes.user;
+        }
+      }
+
+      // 2. Sync / Fallback to native backend database
+      try {
+        const res = await fetch('/api.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'login',
+            identity,
+            password,
+          }),
+        });
+        const data = await res.json();
+        if (data.success && data.user) {
+          authenticatedUser = authenticatedUser || data.user;
+        }
+      } catch {
+        // Fallback
+      }
+
+      if (authenticatedUser) {
         setSuccessMessage('Authentication successful!');
-        onUserUpdated(data.user);
+        onUserUpdated(authenticatedUser);
         setTimeout(() => {
           setCurrentMode('profile');
         }, 800);
       } else {
-        setErrorMessage(data.message || 'Invalid username/email or password.');
+        setErrorMessage('Invalid username/email or password. Please verify credentials.');
       }
     } catch (err: any) {
-      setErrorMessage('Connection failed. Please retry.');
+      setErrorMessage(err?.message || 'Connection failed. Please retry.');
     } finally {
       setLoading(false);
     }
@@ -133,6 +191,9 @@ export function AuthModal({
 
   const handleLogout = async () => {
     try {
+      if (isSupabaseReady) {
+        await signOutSupabase();
+      }
       await fetch('/api.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -141,7 +202,7 @@ export function AuthModal({
       onUserUpdated(null);
       setCurrentMode('login');
       setSuccessMessage('Logged out safely.');
-    } catch (e) {
+    } catch {
       onUserUpdated(null);
       onClose();
     }
@@ -175,12 +236,18 @@ export function AuthModal({
               {currentMode === 'profile' && 'Trader Citadel Profile'}
               {currentMode === 'redeem-vip' && 'Redeem 30-Day VIP Pass'}
             </h3>
-            <span className="text-[11px] font-mono text-emerald-400">
-              {currentMode === 'register' && '10 Free Starter Credits on Registration'}
-              {currentMode === 'login' && 'Sync Credits, Signals & VIP Status'}
-              {currentMode === 'profile' && `User: ${user?.username || 'Trader'}`}
-              {currentMode === 'redeem-vip' && 'Strict 30-Day Timeframe Protection'}
-            </span>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[11px] font-mono text-emerald-400">
+                {currentMode === 'register' && '10 Free Starter Credits on Registration'}
+                {currentMode === 'login' && 'Sync Credits, Signals & VIP Status'}
+                {currentMode === 'profile' && `User: ${user?.username || 'Trader'}`}
+                {currentMode === 'redeem-vip' && 'Strict 30-Day Timeframe Protection'}
+              </span>
+              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-950 border border-slate-800 text-slate-300 flex items-center gap-1">
+                <span className={`w-1.5 h-1.5 rounded-full ${isSupabaseReady ? 'bg-emerald-400' : 'bg-cyan-400'}`} />
+                <span>{isSupabaseReady ? 'Supabase Auth' : 'Native Auth'}</span>
+              </span>
+            </div>
           </div>
         </div>
 
