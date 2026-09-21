@@ -270,6 +270,7 @@ function handleNativeApi(req: express.Request, res: express.Response) {
   switch (action) {
     case "heartbeat": {
       const sessionId = (req.query.session_id as string) || 
+                        (req.headers["x-session-id"] as string) ||
                         (req.body?.session_id as string) || 
                         `${clientIP}_${(req.headers["user-agent"] || "").slice(0, 30)}`;
 
