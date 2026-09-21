@@ -272,22 +272,41 @@ export async function signUpWithSupabase(
 ): Promise<{ success: boolean; user?: UserProfile; message: string }> {
   const client = getSupabaseClient();
   if (!client) {
-    return { success: false, message: 'Supabase client is not configured.' };
+    return { success: false, message: 'Supabase client is not configured (missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).' };
   }
 
   try {
-    const isValidVip = vipKey && ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M'].includes(vipKey.trim().toUpperCase());
-    const vipExpiresAt = isValidVip ? new Date(Date.now() + 30 * 86400000).toISOString() : null;
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanUsername = username.trim();
+
+    if (cleanUsername.length < 3) {
+      return { success: false, message: 'Username must be at least 3 characters.' };
+    }
+    if (!cleanEmail.includes('@')) {
+      return { success: false, message: 'Please enter a valid email address.' };
+    }
+    if (!password || password.length < 6) {
+      return { success: false, message: 'Password must be at least 6 characters.' };
+    }
+
+    const isValidVip =
+      !!vipKey &&
+      ['VIP-ALPHA-30D', 'PULSE-VIP-2026', 'QUANT-30D', 'VIP-TRADER-1M', 'FOREX-PRO-MT5'].includes(
+        vipKey.trim().toUpperCase()
+      );
+    const vipExpiresAt = isValidVip
+      ? new Date(Date.now() + 30 * 86400000).toISOString()
+      : null;
 
     const { data: authData, error: authError } = await client.auth.signUp({
-      email: email.trim().toLowerCase(),
+      email: cleanEmail,
       password,
       options: {
         data: {
-          username: username.trim(),
+          username: cleanUsername,
           is_vip: isValidVip,
           vip_expires_at: vipExpiresAt,
-          role: email.trim().toLowerCase() === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER',
+          role: cleanEmail === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER',
         },
       },
     });
@@ -296,21 +315,30 @@ export async function signUpWithSupabase(
       return { success: false, message: authError.message };
     }
 
-    if (!authData.user) {
-      return { success: false, message: 'Sign up failed: no user data returned.' };
+    // Supabase sometimes returns a user object with empty identities when the email already exists
+    const identities = authData.user?.identities ?? [];
+    if (authData.user && identities.length === 0) {
+      return {
+        success: false,
+        message: 'This email is already registered. Please sign in instead.',
+      };
     }
 
-    // Attempt to upsert record into public.users table if it exists
+    if (!authData.user) {
+      return { success: false, message: 'Sign up failed: no user returned from Supabase.' };
+    }
+
+    // Best-effort: write profile row (ignore RLS / missing table errors)
     let dbUser: any = null;
     try {
-      const { data: insertedUser } = await client
+      const { data: insertedUser, error: upsertError } = await client
         .from('users')
         .upsert(
           {
             auth_user_id: authData.user.id,
-            username: username.trim(),
-            email: email.trim().toLowerCase(),
-            role: email.trim().toLowerCase() === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER',
+            username: cleanUsername,
+            email: cleanEmail,
+            role: cleanEmail === 'durodoluwa5@gmail.com' ? 'ADMIN' : 'USER',
             credits: isValidVip ? 9999 : 10,
             is_vip: isValidVip,
             vip_expires_at: vipExpiresAt,
@@ -320,9 +348,14 @@ export async function signUpWithSupabase(
         )
         .select()
         .single();
-      dbUser = insertedUser;
-    } catch {
-      // Table might not exist yet, metadata in authData.user will suffice
+
+      if (!upsertError) {
+        dbUser = insertedUser;
+      } else {
+        console.warn('[Supabase users upsert]', upsertError.message);
+      }
+    } catch (e) {
+      console.warn('[Supabase users upsert exception]', e);
     }
 
     const userProfile = mapToUserProfile(authData.user, dbUser);
@@ -330,14 +363,13 @@ export async function signUpWithSupabase(
       success: true,
       user: userProfile,
       message: isValidVip
-        ? 'Account successfully created with Supabase Auth! ★ 30-Day VIP Pass activated.'
-        : 'Account created with Supabase Auth with 10 free starter credits!',
+        ? 'Account created! ★ 30-Day VIP Pass activated.'
+        : 'Account created with 10 free starter credits!',
     };
   } catch (err: any) {
     return { success: false, message: err?.message || 'Supabase authentication failed.' };
   }
 }
-
 /**
  * Supabase Auth: Sign In existing user
  */
