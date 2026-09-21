@@ -12,7 +12,8 @@ header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
 try {
     $pdo = getDatabaseConnection();
-    $sessionId = session_id();
+    $rawSessionId = $_GET['session_id'] ?? $_POST['session_id'] ?? ($_SERVER['HTTP_X_SESSION_ID'] ?? '');
+    $sessionId = !empty($rawSessionId) ? preg_replace('/[^a-zA-Z0-9_\-]/', '', (string)$rawSessionId) : (session_id() ?: ('sess_' . md5($ip . ($_SERVER['HTTP_USER_AGENT'] ?? 'device') . microtime())));
     $ip = getClientIP();
     $user = getCurrentUser();
     $userId = $user ? (int)$user['id'] : null;
