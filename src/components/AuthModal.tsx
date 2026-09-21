@@ -40,67 +40,36 @@ export function AuthModal({
 
   const isSupabaseReady = Boolean(getSupabaseClient());
 
-  const handleRegister = async (e: React.FormEvent) => {
+    const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setErrorMessage(null);
     setSuccessMessage(null);
 
     try {
-      let registeredUser: UserProfile | null = null;
-      let msg = 'Registration successful!';
-
-      // 1. Try Supabase Auth if client is configured
-      if (isSupabaseReady) {
-        const supaRes = await signUpWithSupabase(email, password, username, vipKey.trim());
-        if (supaRes.success && supaRes.user) {
-          registeredUser = supaRes.user;
-          msg = supaRes.message;
-        } else if (!supaRes.success && supaRes.message && !supaRes.message.includes('missing')) {
-          // If Supabase returned a direct auth error (e.g. user already exists or weak password)
-          setErrorMessage(`Supabase Auth: ${supaRes.message}`);
-          setLoading(false);
-          return;
-        }
+      if (!isSupabaseReady) {
+        setErrorMessage(
+          'Supabase is not connected in this build. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel, then Redeploy.'
+        );
+        return;
       }
 
-      // 2. Also sync to native backend database
-      try {
-        const res = await fetch('/api.php', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'register',
-            username,
-            email,
-            password,
-            vip_key: vipKey.trim(),
-          }),
-        });
-        const data = await res.json();
-        if (data.success && data.user) {
-          registeredUser = registeredUser || data.user;
-          msg = data.message || msg;
-        } else if (!registeredUser) {
-          setErrorMessage(data.message || 'Registration failed. Please check inputs.');
-          setLoading(false);
-          return;
-        }
-      } catch {
-        // If native API network glitch but Supabase succeeded, proceed
+      const supaRes = await signInWithSupabase(identity, password);
+
+      if (supaRes.success && supaRes.user) {
+        setSuccessMessage('Authentication successful!');
+        onUserUpdated(supaRes.user);
+        setTimeout(() => setCurrentMode('profile'), 800);
+        return;
       }
 
-      if (registeredUser) {
-        setSuccessMessage(msg);
-        onUserUpdated(registeredUser);
-        setTimeout(() => {
-          setCurrentMode('profile');
-        }, 1200);
-      } else {
-        setErrorMessage('Registration could not be completed. Please check your network.');
-      }
+      setErrorMessage(
+        supaRes.message
+          ? `Login failed: ${supaRes.message}`
+          : 'Invalid email/username or password.'
+      );
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Network error during registration. Please retry.');
+      setErrorMessage(err?.message || 'Connection failed. Please retry.');
     } finally {
       setLoading(false);
     }
