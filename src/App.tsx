@@ -12,7 +12,7 @@ import { AboutPage } from './components/AboutPage.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
 import { VipSafeRadarModal } from './components/VipSafeRadarModal.tsx';
 import { getSiteSettings, fetchRemoteSiteSettings } from './utils/siteConfigManager.ts';
-import { sendSupabasePresence } from './utils/supabaseClient.ts';
+import { sendSupabasePresence, getCurrentSupabaseUser } from './utils/supabaseClient.ts';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<PageView>('landing');
@@ -40,9 +40,23 @@ export default function App() {
     winRate: 85.7,
   });
 
-  // Check initial user authentication & VIP 30-day status from API
+  // Check initial user authentication & VIP 30-day status
   useEffect(() => {
     const checkAuthStatus = async () => {
+      // 1. Check active Supabase Auth session first (essential for Vercel)
+      try {
+        const supaUser = await getCurrentSupabaseUser();
+        if (supaUser) {
+          setUser(supaUser);
+          setCredits(supaUser.credits);
+          setIsVIP(Boolean(supaUser.is_vip));
+          return;
+        }
+      } catch {
+        // Fallback
+      }
+
+      // 2. Fallback to API status for custom environments
       try {
         const res = await fetch('/api.php?action=status');
         if (res.ok) {
